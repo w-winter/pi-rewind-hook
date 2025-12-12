@@ -10,10 +10,8 @@ A Pi agent hook that enables rewinding file changes during coding sessions. Crea
 
 ## Installation
 
-Run this one-liner:
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js | node
+npx pi-rewind-hook
 ```
 
 This will:
@@ -21,9 +19,15 @@ This will:
 2. Download the hook files
 3. Add the hook to your `~/.pi/agent/settings.json`
 
-### Manual Installation
+### Alternative Installation
 
-Alternatively, clone the repo and configure manually:
+Using curl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js | node
+```
+
+Or clone the repo and configure manually:
 
 ```bash
 git clone https://github.com/nicobailon/pi-rewind-hook ~/.pi/agent/hooks/rewind
@@ -39,13 +43,11 @@ Then add to `~/.pi/agent/settings.json`:
 
 ### Platform Notes
 
-**Windows (without WSL):** The curl command works in PowerShell, but you may need to use:
+**Windows:** The `npx` command works in PowerShell, Command Prompt, and WSL. If you prefer curl on Windows without WSL:
 
 ```powershell
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js" -OutFile install.js; node install.js; Remove-Item install.js
 ```
-
-**Windows (with WSL):** Use the standard curl command in your WSL terminal.
 
 ## How It Works
 

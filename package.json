@@ -1,0 +1,22 @@
+{
+  "name": "pi-rewind-hook",
+  "version": "1.0.0",
+  "description": "Rewind hook for Pi agent - automatic git checkpoints with file/conversation restore",
+  "bin": {
+    "pi-rewind-hook": "./install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicobailon/pi-rewind-hook"
+  },
+  "keywords": [
+    "pi",
+    "pi-agent",
+    "hook",
+    "checkpoint",
+    "rewind",
+    "git"
+  ],
+  "author": "nicobailon",
+  "license": "MIT"
+}
