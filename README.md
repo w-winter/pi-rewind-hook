@@ -5,11 +5,31 @@ A Pi agent hook that enables rewinding file changes during coding sessions. Crea
 ## Requirements
 
 - Pi agent v0.18.0+
+- Node.js (for installation)
 - Git repository (checkpoints are stored as git refs)
 
-## Setup
+## Installation
 
-Add to `~/.pi/agent/settings.json`:
+Run this one-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js | node
+```
+
+This will:
+1. Create `~/.pi/agent/hooks/rewind/`
+2. Download the hook files
+3. Add the hook to your `~/.pi/agent/settings.json`
+
+### Manual Installation
+
+Alternatively, clone the repo and configure manually:
+
+```bash
+git clone https://github.com/nicobailon/pi-rewind-hook ~/.pi/agent/hooks/rewind
+```
+
+Then add to `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -17,11 +37,15 @@ Add to `~/.pi/agent/settings.json`:
 }
 ```
 
-Or use the CLI flag:
+### Platform Notes
 
-```bash
-pi --hook ~/.pi/agent/hooks/rewind/index.ts
+**Windows (without WSL):** The curl command works in PowerShell, but you may need to use:
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js" -OutFile install.js; node install.js; Remove-Item install.js
 ```
+
+**Windows (with WSL):** Use the standard curl command in your WSL terminal.
 
 ## How It Works
 
@@ -122,6 +146,21 @@ Delete all checkpoints:
 ```bash
 git for-each-ref --format='%(refname)' refs/pi-checkpoints/ | xargs -n1 git update-ref -d
 ```
+
+## Uninstalling
+
+1. Remove the hook directory:
+   ```bash
+   rm -rf ~/.pi/agent/hooks/rewind
+   ```
+   On Windows (PowerShell): `Remove-Item -Recurse -Force ~/.pi/agent/hooks/rewind`
+
+2. Remove the hook from `~/.pi/agent/settings.json` (delete the line with `rewind/index.ts` from the `hooks` array)
+
+3. Optionally, clean up git refs in each repo where you used the hook:
+   ```bash
+   git for-each-ref --format='%(refname)' refs/pi-checkpoints/ | xargs -n1 git update-ref -d
+   ```
 
 ## Limitations
 
