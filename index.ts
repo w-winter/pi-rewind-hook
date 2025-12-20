@@ -9,7 +9,8 @@ export default function (pi: HookAPI) {
 
   console.error(`[rewind] Hook loaded`);
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session", async (event, ctx) => {
+    if (event.reason !== "start") return;
     if (!ctx.hasUI) return;
 
     const checkpointId = `checkpoint-resume-${Date.now()}`;
