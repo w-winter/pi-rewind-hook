@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2024-12-27
+
+### Fixed
+- Use `before_branch` event instead of `branch` for proper hook timing (thanks @badlogic)
+- Cancel branch when user dismisses restore options menu
+
 ## [1.1.0] - 2024-12-27
 
 ### Added

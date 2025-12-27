@@ -160,7 +160,7 @@ export default function (pi: HookAPI) {
   });
 
   pi.on("session", async (event, ctx) => {
-    if (event.reason !== "branch") return;
+    if (event.reason !== "before_branch") return;
     if (!ctx.hasUI) return;
     if (!isGitRepo) return;
 
@@ -205,7 +205,7 @@ export default function (pi: HookAPI) {
 
     if (!choice) {
       ctx.ui.notify("Rewind cancelled", "info");
-      return;
+      return { cancel: true };
     }
 
     if (choice.startsWith("Conversation only")) {
