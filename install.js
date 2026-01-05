@@ -6,9 +6,10 @@ const https = require("https");
 const os = require("os");
 
 const REPO_URL = "https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main";
-const HOOK_DIR = path.join(os.homedir(), ".pi", "agent", "hooks", "rewind");
+const EXT_DIR = path.join(os.homedir(), ".pi", "agent", "extensions", "rewind");
+const OLD_HOOK_DIR = path.join(os.homedir(), ".pi", "agent", "hooks", "rewind");
 const SETTINGS_FILE = path.join(os.homedir(), ".pi", "agent", "settings.json");
-const HOOK_PATH = "~/.pi/agent/hooks/rewind/index.ts";
+const EXT_PATH = "~/.pi/agent/extensions/rewind/index.ts";
 
 function download(url) {
   return new Promise((resolve, reject) => {
@@ -28,22 +29,19 @@ function download(url) {
 }
 
 async function main() {
-  console.log("Installing pi-rewind-hook...\n");
+  console.log("Installing pi-rewind-hook (Rewind Extension)...\n");
 
-  // Create hook directory
-  console.log(`Creating directory: ${HOOK_DIR}`);
-  fs.mkdirSync(HOOK_DIR, { recursive: true });
+  fs.mkdirSync(EXT_DIR, { recursive: true });
+  console.log(`Created directory: ${EXT_DIR}`);
 
-  // Download hook files
   console.log("Downloading index.ts...");
-  const hookContent = await download(`${REPO_URL}/index.ts`);
-  fs.writeFileSync(path.join(HOOK_DIR, "index.ts"), hookContent);
+  const extContent = await download(`${REPO_URL}/index.ts`);
+  fs.writeFileSync(path.join(EXT_DIR, "index.ts"), extContent);
 
   console.log("Downloading README.md...");
   const readmeContent = await download(`${REPO_URL}/README.md`);
-  fs.writeFileSync(path.join(HOOK_DIR, "README.md"), readmeContent);
+  fs.writeFileSync(path.join(EXT_DIR, "README.md"), readmeContent);
 
-  // Update settings.json
   console.log(`\nUpdating settings: ${SETTINGS_FILE}`);
   
   let settings = {};
@@ -56,25 +54,54 @@ async function main() {
     }
   }
 
-  // Ensure hooks array exists
-  if (!Array.isArray(settings.hooks)) {
-    settings.hooks = [];
+  if (settings.hooks && Array.isArray(settings.hooks) && settings.hooks.length > 0) {
+    console.log("\nMigrating hooks to extensions...");
+    if (!Array.isArray(settings.extensions)) {
+      settings.extensions = [];
+    }
+    for (const entry of settings.hooks) {
+      if (entry.includes("/hooks/rewind")) {
+        continue;
+      }
+      const newPath = entry.replace("/hooks/", "/extensions/");
+      if (!settings.extensions.includes(newPath)) {
+        settings.extensions.push(newPath);
+        console.log(`  Migrated: ${entry} -> ${newPath}`);
+      }
+    }
+    delete settings.hooks;
+    console.log("Removed old 'hooks' key from settings");
   }
 
-  // Add hook if not already present
-  if (!settings.hooks.includes(HOOK_PATH)) {
-    settings.hooks.push(HOOK_PATH);
-    
-    // Ensure parent directory exists
-    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");
-    console.log(`Added "${HOOK_PATH}" to hooks array`);
+  if (!Array.isArray(settings.extensions)) {
+    settings.extensions = [];
+  }
+
+  const EXT_PATH_ALT = "~/.pi/agent/extensions/rewind";
+  const hasRewindExt = settings.extensions.some(p => 
+    p === EXT_PATH || p === EXT_PATH_ALT || 
+    p.includes("/extensions/rewind/index.ts") || 
+    p.endsWith("/extensions/rewind")
+  );
+
+  if (!hasRewindExt) {
+    settings.extensions.push(EXT_PATH);
+    console.log(`Added "${EXT_PATH}" to extensions array`);
   } else {
-    console.log("Hook already configured in settings.json");
+    console.log("Extension already configured in settings.json");
+  }
+
+  fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");
+
+  if (fs.existsSync(OLD_HOOK_DIR)) {
+    console.log(`\nCleaning up old hooks directory: ${OLD_HOOK_DIR}`);
+    fs.rmSync(OLD_HOOK_DIR, { recursive: true, force: true });
+    console.log("Removed old hooks/rewind directory");
   }
 
   console.log("\nInstallation complete!");
-  console.log("\nThe rewind hook will load automatically when you start pi.");
+  console.log("\nThe rewind extension will load automatically when you start pi.");
   console.log("Use /branch to rewind to a previous checkpoint.");
 }
 

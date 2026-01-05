@@ -1,6 +1,6 @@
-# Rewind Hook
+# Rewind Extension
 
-A Pi agent hook that enables rewinding file changes during coding sessions. Creates automatic checkpoints using git refs, allowing you to restore files to previous states while optionally preserving conversation history.
+A Pi agent extension that enables rewinding file changes during coding sessions. Creates automatic checkpoints using git refs, allowing you to restore files to previous states while optionally preserving conversation history.
 
 ## Screenshots
 
@@ -10,7 +10,7 @@ A Pi agent hook that enables rewinding file changes during coding sessions. Crea
 
 ## Requirements
 
-- Pi agent v0.31+
+- Pi agent v0.35.0+ (unified extensions system)
 - Node.js (for installation)
 - Git repository (checkpoints are stored as git refs)
 
@@ -21,9 +21,11 @@ npx pi-rewind-hook
 ```
 
 This will:
-1. Create `~/.pi/agent/hooks/rewind/`
-2. Download the hook files
-3. Add the hook to your `~/.pi/agent/settings.json`
+1. Create `~/.pi/agent/extensions/rewind/`
+2. Download the extension files
+3. Add the extension to your `~/.pi/agent/settings.json`
+4. Migrate any existing hooks config to extensions (if upgrading from v1.2.0)
+5. Clean up old `hooks/rewind` directory (if present)
 
 ### Alternative Installation
 
@@ -36,14 +38,14 @@ curl -fsSL https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/inst
 Or clone the repo and configure manually:
 
 ```bash
-git clone https://github.com/nicobailon/pi-rewind-hook ~/.pi/agent/hooks/rewind
+git clone https://github.com/nicobailon/pi-rewind-hook ~/.pi/agent/extensions/rewind
 ```
 
 Then add to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "hooks": ["~/.pi/agent/hooks/rewind/index.ts"]
+  "extensions": ["~/.pi/agent/extensions/rewind/index.ts"]
 }
 ```
 
@@ -55,11 +57,20 @@ Then add to `~/.pi/agent/settings.json`:
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nicobailon/pi-rewind-hook/main/install.js" -OutFile install.js; node install.js; Remove-Item install.js
 ```
 
+### Upgrading from v1.2.0
+
+If you're upgrading from pi-rewind-hook v1.2.0 (which used the hooks system), simply run `npx pi-rewind-hook` again. The installer will:
+- Move the extension from `hooks/rewind` to `extensions/rewind`
+- Migrate your settings.json from `hooks` to `extensions`
+- Clean up the old hooks directory
+
+**Note:** v1.3.0+ requires pi v0.35.0 or later. If you're on an older version of pi, stay on pi-rewind-hook v1.2.0.
+
 ## How It Works
 
 ### Checkpoints
 
-The hook creates git refs at two points:
+The extension creates git refs at two points:
 
 1. **Session start** - When pi starts, creates a "resume checkpoint" of the current file state
 2. **Each turn** - Before the agent processes each message, creates a checkpoint
@@ -100,7 +111,7 @@ To rewind via tree navigation:
 
 ### Resumed Sessions
 
-When you resume a session (`pi --resume`), the hook creates a resume checkpoint. If you branch to a message from before the current session, you can restore files to the state when you resumed (not per-message granularity, but a safety net).
+When you resume a session (`pi --resume`), the extension creates a resume checkpoint. If you branch to a message from before the current session, you can restore files to the state when you resumed (not per-message granularity, but a safety net).
 
 ## Examples
 
@@ -165,15 +176,15 @@ git for-each-ref --format='%(refname)' refs/pi-checkpoints/ | xargs -n1 git upda
 
 ## Uninstalling
 
-1. Remove the hook directory:
+1. Remove the extension directory:
    ```bash
-   rm -rf ~/.pi/agent/hooks/rewind
+   rm -rf ~/.pi/agent/extensions/rewind
    ```
-   On Windows (PowerShell): `Remove-Item -Recurse -Force ~/.pi/agent/hooks/rewind`
+   On Windows (PowerShell): `Remove-Item -Recurse -Force ~/.pi/agent/extensions/rewind`
 
-2. Remove the hook from `~/.pi/agent/settings.json` (delete the line with `rewind/index.ts` from the `hooks` array)
+2. Remove the extension from `~/.pi/agent/settings.json` (delete the line with `rewind/index.ts` from the `extensions` array)
 
-3. Optionally, clean up git refs in each repo where you used the hook:
+3. Optionally, clean up git refs in each repo where you used the extension:
    ```bash
    git for-each-ref --format='%(refname)' refs/pi-checkpoints/ | xargs -n1 git update-ref -d
    ```

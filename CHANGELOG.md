@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-01-05
+
+### Breaking Changes
+- Requires pi v0.35.0+ (unified extensions system)
+- Install location changed from `hooks/rewind` to `extensions/rewind`
+
+### Changed
+- Migrated from hooks to unified extensions system
+- Settings key changed from `hooks` to `extensions`
+- Install script now migrates old hooks config and cleans up old directory
+- Renamed "Hook" to "Extension" throughout codebase and docs
+
 ## [1.2.0] - 2025-01-03
 
 ### Added

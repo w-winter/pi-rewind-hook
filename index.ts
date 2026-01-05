@@ -1,13 +1,13 @@
 /**
- * Rewind Hook - Git-based file restoration for pi branching
+ * Rewind Extension - Git-based file restoration for pi branching
  *
  * Creates worktree snapshots at each turn so /branch can restore code state.
  * Supports: restore files + conversation, files only, conversation only, undo last restore.
  *
- * Updated for pi-coding-agent v0.31+ (granular session events API)
+ * Updated for pi-coding-agent v0.35.0+ (unified extensions system)
  */
 
-import type { HookAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { exec as execCb } from "child_process";
 import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
@@ -22,14 +22,14 @@ const MAX_CHECKPOINTS = 100;
 
 type ExecFn = (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-export default function (pi: HookAPI) {
+export default function (pi: ExtensionAPI) {
   const checkpoints = new Map<string, string>();
   let currentEntryId: string | undefined;
   let resumeCheckpoint: string | null = null;
   let repoRoot: string | null = null;
   let isGitRepo = false;
 
-  console.error(`[rewind] Hook loaded`);
+  console.error(`[rewind] Extension loaded`);
 
   async function findBeforeRestoreRef(exec: ExecFn): Promise<{ refName: string; commitSha: string } | null> {
     try {
