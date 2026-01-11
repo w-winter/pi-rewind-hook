@@ -1,13 +1,14 @@
 /**
  * Rewind Extension - Git-based file restoration for pi branching
  *
- * Creates worktree snapshots at each turn so /branch can restore code state.
+ * Creates worktree snapshots at the start of each agent loop (when user sends a message)
+ * so /branch and tree navigation can restore code state.
  * Supports: restore files + conversation, files only, conversation only, undo last restore.
  *
  * Updated for pi-coding-agent v0.35.0+ (unified extensions system)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { exec as execCb } from "child_process";
 import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
@@ -19,6 +20,7 @@ const execAsync = promisify(execCb);
 const REF_PREFIX = "refs/pi-checkpoints/";
 const BEFORE_RESTORE_PREFIX = "before-restore-";
 const MAX_CHECKPOINTS = 100;
+const STATUS_KEY = "rewind";
 
 type ExecFn = (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
@@ -36,8 +38,31 @@ export default function (pi: ExtensionAPI) {
   let resumeCheckpoint: string | null = null;
   let repoRoot: string | null = null;
   let isGitRepo = false;
-
-  console.error(`[rewind] Extension loaded`);
+  
+  // Pending checkpoint: worktree state captured at turn_start, waiting for turn_end
+  // to associate with the correct user message entry ID
+  let pendingCheckpoint: { commitSha: string; timestamp: number } | null = null;
+  
+  /**
+   * Update the footer status with checkpoint count
+   */
+  function updateStatus(ctx: ExtensionContext) {
+    if (!ctx.hasUI) return;
+    const theme = ctx.ui.theme;
+    const count = checkpoints.size;
+    ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "◆ ") + theme.fg("muted", `${count} checkpoint${count === 1 ? "" : "s"}`));
+  }
+  
+  /**
+   * Reset all state for a fresh session
+   */
+  function resetState() {
+    checkpoints.clear();
+    resumeCheckpoint = null;
+    repoRoot = null;
+    isGitRepo = false;
+    pendingCheckpoint = null;
+  }
 
   /**
    * Rebuild the checkpoints map from existing git refs.
@@ -74,11 +99,8 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      if (checkpoints.size > 0) {
-        console.error(`[rewind] Rebuilt checkpoints map: ${checkpoints.size} entries`);
-      }
-    } catch (err) {
-      console.error(`[rewind] Failed to rebuild checkpoints map: ${err}`);
+    } catch {
+      // Silent failure - checkpoints will be recreated as needed
     }
   }
 
@@ -95,8 +117,9 @@ export default function (pi: ExtensionAPI) {
       const line = result.stdout.trim();
       if (!line) return null;
 
-      const [refName, commitSha] = line.split(" ");
-      return { refName, commitSha };
+      const parts = line.split(" ");
+      if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+      return { refName: parts[0], commitSha: parts[1] };
     } catch {
       return null;
     }
@@ -109,8 +132,13 @@ export default function (pi: ExtensionAPI) {
     return repoRoot;
   }
 
-  async function captureWorktree(exec: ExecFn): Promise<string> {
-    const root = await getRepoRoot(exec);
+  /**
+   * Capture current worktree state as a git commit (without affecting HEAD).
+   * Uses execAsync directly (instead of pi.exec) because we need to set
+   * GIT_INDEX_FILE environment variable for an isolated index.
+   */
+  async function captureWorktree(): Promise<string> {
+    const root = await getRepoRoot(pi.exec);
     const tmpDir = await mkdtemp(join(tmpdir(), "pi-rewind-"));
     const tmpIndex = join(tmpDir, "index");
 
@@ -137,32 +165,29 @@ export default function (pi: ExtensionAPI) {
     try {
       const existingBackup = await findBeforeRestoreRef(exec);
 
-      const backupCommit = await captureWorktree(exec);
+      const backupCommit = await captureWorktree();
       const newBackupId = `${BEFORE_RESTORE_PREFIX}${Date.now()}`;
       await exec("git", [
         "update-ref",
         `${REF_PREFIX}${newBackupId}`,
         backupCommit,
       ]);
-      console.error(`[rewind] Created backup: ${newBackupId}`);
 
       if (existingBackup) {
         await exec("git", ["update-ref", "-d", existingBackup.refName]);
-        console.error(`[rewind] Deleted old backup: ${existingBackup.refName}`);
       }
 
       await exec("git", ["checkout", targetRef, "--", "."]);
       return true;
     } catch (err) {
-      console.error(`[rewind] Failed to restore: ${err}`);
-      notify(`Failed to restore files: ${err}`, "error");
+      notify(`Failed to restore: ${err}`, "error");
       return false;
     }
   }
 
   async function createCheckpointFromWorktree(exec: ExecFn, checkpointId: string): Promise<boolean> {
     try {
-      const commitSha = await captureWorktree(exec);
+      const commitSha = await captureWorktree();
       await exec("git", [
         "update-ref",
         `${REF_PREFIX}${checkpointId}`,
@@ -172,6 +197,25 @@ export default function (pi: ExtensionAPI) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Find the most recent user message in the current branch.
+   * Used at turn_end to find the user message that triggered the agent loop.
+   */
+  function findUserMessageEntry(sessionManager: { getLeafId(): string | null; getBranch(id?: string): any[] }): { id: string } | null {
+    const leafId = sessionManager.getLeafId();
+    if (!leafId) return null;
+    
+    const branch = sessionManager.getBranch(leafId);
+    // Walk backwards to find the most recent user message
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i];
+      if (entry.type === "message" && entry.message?.role === "user") {
+        return entry;
+      }
+    }
+    return null;
   }
 
   async function pruneCheckpoints(exec: ExecFn) {
@@ -194,7 +238,6 @@ export default function (pi: ExtensionAPI) {
         const toDelete = checkpointRefs.slice(0, checkpointRefs.length - MAX_CHECKPOINTS);
         for (const ref of toDelete) {
           await exec("git", ["update-ref", "-d", ref]);
-          console.error(`[rewind] Pruned old checkpoint: ${ref}`);
 
           // Remove from in-memory map ONLY if this is the currently mapped checkpoint.
           // There might be a newer checkpoint for the same entry that we're keeping.
@@ -208,13 +251,19 @@ export default function (pi: ExtensionAPI) {
           }
         }
       }
-    } catch (err) {
-      console.error(`[rewind] Failed to prune checkpoints: ${err}`);
+    } catch {
+      // Silent failure - pruning is not critical
     }
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  /**
+   * Initialize the extension for the current session/repo
+   */
+  async function initializeForSession(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
+
+    // Reset all state for fresh initialization
+    resetState();
 
     try {
       const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
@@ -223,7 +272,10 @@ export default function (pi: ExtensionAPI) {
       isGitRepo = false;
     }
 
-    if (!isGitRepo) return;
+    if (!isGitRepo) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+      return;
+    }
 
     // Rebuild checkpoints map from existing git refs (for resumed sessions)
     await rebuildCheckpointsMap(pi.exec);
@@ -235,41 +287,75 @@ export default function (pi: ExtensionAPI) {
       const success = await createCheckpointFromWorktree(pi.exec, checkpointId);
       if (success) {
         resumeCheckpoint = checkpointId;
-        console.error(`[rewind] Created resume checkpoint: ${checkpointId}`);
       }
-    } catch (err) {
-      console.error(`[rewind] Failed to create resume checkpoint: ${err}`);
+    } catch {
+      // Silent failure - resume checkpoint is optional
     }
+    
+    updateStatus(ctx);
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    await initializeForSession(ctx);
+  });
+  
+  pi.on("session_switch", async (_event, ctx) => {
+    await initializeForSession(ctx);
   });
 
   pi.on("turn_start", async (event, ctx) => {
     if (!ctx.hasUI) return;
     if (!isGitRepo) return;
-
-    // Get the current leaf entry - at turn_start, this is the USER message
-    // that triggered this turn. Associate checkpoint with this entry so
-    // navigating to this message restores files to this point.
-    const leaf = ctx.sessionManager.getLeafEntry();
-    if (!leaf) {
-      console.error(`[rewind] No leaf entry available, skipping checkpoint creation`);
-      return;
-    }
-
-    // Include entry ID in checkpoint name for persistence across sessions
-    // Format: checkpoint-{timestamp}-{entryId}
-    const entryId = leaf.id;
-    const sanitizedEntryId = sanitizeForRef(entryId);
-    const checkpointId = `checkpoint-${event.timestamp}-${sanitizedEntryId}`;
+    
+    // Only capture at the start of a new agent loop (first turn).
+    // This is when a user message triggers the agent - we want to snapshot
+    // the file state BEFORE any tools execute.
+    if (event.turnIndex !== 0) return;
 
     try {
-      const success = await createCheckpointFromWorktree(pi.exec, checkpointId);
-      if (success) {
-        checkpoints.set(sanitizedEntryId, checkpointId);
-        console.error(`[rewind] Created checkpoint ${checkpointId} for entry ${entryId}`);
-        await pruneCheckpoints(pi.exec);
-      }
-    } catch (err) {
-      console.error(`[rewind] Failed to create checkpoint: ${err}`);
+      // Capture worktree state now, but don't create the ref yet.
+      // At this point, the user message hasn't been appended to the session,
+      // so we don't know its entry ID. We'll create the ref at turn_end.
+      const commitSha = await captureWorktree();
+      pendingCheckpoint = { commitSha, timestamp: event.timestamp };
+    } catch {
+      pendingCheckpoint = null;
+    }
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    if (!ctx.hasUI) return;
+    if (!isGitRepo) return;
+    if (!pendingCheckpoint) return;
+    
+    // Only process at end of first turn - by now the user message has been
+    // appended to the session and we can find its entry ID.
+    if (event.turnIndex !== 0) return;
+
+    try {
+      const userEntry = findUserMessageEntry(ctx.sessionManager);
+      if (!userEntry) return;
+
+      const entryId = userEntry.id;
+      const sanitizedEntryId = sanitizeForRef(entryId);
+      const checkpointId = `checkpoint-${pendingCheckpoint.timestamp}-${sanitizedEntryId}`;
+
+      // Create the git ref for this checkpoint
+      await pi.exec("git", [
+        "update-ref",
+        `${REF_PREFIX}${checkpointId}`,
+        pendingCheckpoint.commitSha,
+      ]);
+
+      checkpoints.set(sanitizedEntryId, checkpointId);
+      const countBeforePrune = checkpoints.size;
+      await pruneCheckpoints(pi.exec);
+      updateStatus(ctx);
+      ctx.ui.notify(`Checkpoint ${countBeforePrune} saved`, "info");
+    } catch {
+      // Silent failure - checkpoint creation is not critical
+    } finally {
+      pendingCheckpoint = null;
     }
   });
 
@@ -348,14 +434,19 @@ export default function (pi: ExtensionAPI) {
       ref,
       ctx.ui.notify.bind(ctx.ui)
     );
-    if (success) {
-      ctx.ui.notify(
-        usingResumeCheckpoint
-          ? "Files restored to session start"
-          : "Files restored from checkpoint",
-        "info"
-      );
+    
+    if (!success) {
+      // File restore failed - cancel the branch operation entirely
+      // (restoreWithBackup already notified the user of the error)
+      return { cancel: true };
     }
+    
+    ctx.ui.notify(
+      usingResumeCheckpoint
+        ? "Files restored to session start"
+        : "Files restored from checkpoint",
+      "info"
+    );
 
     if (isCodeOnly) {
       return { skipConversationRestore: true };
@@ -433,14 +524,19 @@ export default function (pi: ExtensionAPI) {
       ref,
       ctx.ui.notify.bind(ctx.ui)
     );
-    if (success) {
-      ctx.ui.notify(
-        usingResumeCheckpoint
-          ? "Files restored to session start"
-          : "Files restored to checkpoint",
-        "info"
-      );
+    
+    if (!success) {
+      // File restore failed - cancel navigation
+      // (restoreWithBackup already notified the user of the error)
+      return { cancel: true };
     }
+    
+    ctx.ui.notify(
+      usingResumeCheckpoint
+        ? "Files restored to session start"
+        : "Files restored to checkpoint",
+      "info"
+    );
   });
 
 }

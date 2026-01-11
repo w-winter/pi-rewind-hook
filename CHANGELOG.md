@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-01-10
+
+### Changed
+- Replaced noisy stderr logging with clean TUI output
+- Footer now shows checkpoint count (`◆ X checkpoints`)
+- "Checkpoint X saved" notification appears when checkpoint is created
+- Pruning now happens before status update to ensure accurate count
+
+### Fixed
+- State not reset on `/new` or `/resume` (added `session_switch` handler)
+- Checkpoints map not cleared before rebuild (could have stale entries)
+- `findBeforeRestoreRef` now validates git output format
+- Status count now accurate after pruning old checkpoints
+
+### Removed
+- All `console.error` debug logging (cleaner output)
+- Temporary "capturing..." and "restoring..." status messages (too noisy)
+
 ## [1.4.0] - 2026-01-08
 
 ### Fixed
