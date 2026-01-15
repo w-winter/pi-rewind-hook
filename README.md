@@ -92,7 +92,7 @@ The extension creates git refs at two points:
 1. **Session start** - When pi starts, creates a "resume checkpoint" of the current file state
 2. **Each turn** - Before the agent processes each message, creates a checkpoint
 
-Checkpoints are stored as git refs under `refs/pi-checkpoints/` and are pruned to keep the last 100.
+Checkpoints are stored as git refs under `refs/pi-checkpoints/` and are scoped per-session (so multiple pi sessions in the same repo don't interfere with each other). Each session maintains its own 100-checkpoint limit.
 
 ### Rewinding
 
@@ -179,10 +179,12 @@ List all checkpoint refs:
 git for-each-ref refs/pi-checkpoints/
 ```
 
-Manually restore to a checkpoint:
+Checkpoint ref format: `checkpoint-{sessionId}-{timestamp}-{entryId}`
+
+Manually restore to a checkpoint (copy ref name from list above):
 
 ```bash
-git checkout refs/pi-checkpoints/checkpoint-1234567890 -- .
+git checkout refs/pi-checkpoints/checkpoint-abc12345-...-... -- .
 ```
 
 Delete all checkpoints:
@@ -209,6 +211,7 @@ git for-each-ref --format='%(refname)' refs/pi-checkpoints/ | xargs -n1 git upda
 ## Limitations
 
 - Only works in git repositories
-- Checkpoints are per-process (in-memory map), not persisted across restarts
+- Checkpoints are scoped per-session (multiple sessions in the same repo don't share checkpoints)
 - Resumed sessions only have a single resume checkpoint for pre-session messages
 - Tracks working directory changes only (not staged/committed changes)
+- Each session has its own 100-checkpoint limit (pruning doesn't affect other sessions)

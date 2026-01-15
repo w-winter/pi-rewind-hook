@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-01-15
+
+### Fixed
+- **Critical**: Checkpoints now scoped per-session to prevent cross-session interference
+  - Multiple pi sessions in the same git repo no longer prune each other's checkpoints
+  - "Undo last file rewind" now only restores YOUR session's pre-restore state, not another session's
+- **Critical**: Fixed event name `session_before_branch` → `session_before_fork` (fork handler was never being called!)
+- Checkpoint ref format now includes session ID: `checkpoint-{sessionId}-{timestamp}-{entryId}`
+- Before-restore ref format now includes session ID: `before-restore-{sessionId}-{timestamp}`
+
+### Changed
+- `rebuildCheckpointsMap()` now filters by current session ID (with backward compat for old format)
+- `pruneCheckpoints()` now only prunes checkpoints from current session
+- `findBeforeRestoreRef()` now only finds refs from current session
+
+### Backward Compatibility
+- Old-format checkpoints (`checkpoint-{timestamp}-{entryId}`) are still loaded for resumed sessions
+- Old-format checkpoints are not pruned (to avoid cross-session interference)
+- New checkpoints are created in the new session-scoped format
+
 ## [1.6.0] - 2025-01-13
 
 ### Added

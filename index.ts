@@ -57,6 +57,7 @@ export default function (pi: ExtensionAPI) {
   let resumeCheckpoint: string | null = null;
   let repoRoot: string | null = null;
   let isGitRepo = false;
+  let sessionId: string | null = null;
   
   // Pending checkpoint: worktree state captured at turn_start, waiting for turn_end
   // to associate with the correct user message entry ID
@@ -84,20 +85,23 @@ export default function (pi: ExtensionAPI) {
     resumeCheckpoint = null;
     repoRoot = null;
     isGitRepo = false;
+    sessionId = null;
     pendingCheckpoint = null;
     cachedSilentCheckpoints = null;
   }
 
   /**
    * Rebuild the checkpoints map from existing git refs.
-   * Parses refs like `checkpoint-{timestamp}-{entryId}` to reconstruct the mapping.
+   * Supports two formats for backward compatibility:
+   * - New format: `checkpoint-{sessionId}-{timestamp}-{entryId}` (session-scoped)
+   * - Old format: `checkpoint-{timestamp}-{entryId}` (pre-v1.7.0, loaded for current session)
    * This allows checkpoint restoration to work across session resumes.
    */
-  async function rebuildCheckpointsMap(exec: ExecFn): Promise<void> {
+  async function rebuildCheckpointsMap(exec: ExecFn, currentSessionId: string): Promise<void> {
     try {
       const result = await exec("git", [
         "for-each-ref",
-        "--sort=creatordate",
+        "--sort=-creatordate",  // Newest first - we keep first match per entry
         "--format=%(refname)",
         REF_PREFIX,
       ]);
@@ -112,14 +116,30 @@ export default function (pi: ExtensionAPI) {
         if (!checkpointId.startsWith("checkpoint-")) continue;
         if (checkpointId.startsWith("checkpoint-resume-")) continue;
 
-        // Parse: checkpoint-{timestamp}-{entryId}
+        // Try new format first: checkpoint-{sessionId}-{timestamp}-{entryId}
+        // Session ID is a UUID (36 chars with hyphens)
         // Timestamp is always numeric (13 digits for ms since epoch)
         // Entry ID comes after the timestamp, may contain hyphens
-        const match = checkpointId.match(/^checkpoint-(\d+)-(.+)$/);
-        if (match) {
-          const entryId = match[2];
-          // Only keep the most recent checkpoint for each entry (Map overwrites)
-          checkpoints.set(entryId, checkpointId);
+        const newFormatMatch = checkpointId.match(/^checkpoint-([a-f0-9-]{36})-(\d+)-(.+)$/);
+        if (newFormatMatch) {
+          const refSessionId = newFormatMatch[1];
+          const entryId = newFormatMatch[3];
+          // Only load checkpoints from the current session, keep newest (first seen)
+          if (refSessionId === currentSessionId && !checkpoints.has(entryId)) {
+            checkpoints.set(entryId, checkpointId);
+          }
+          continue;
+        }
+
+        // Try old format: checkpoint-{timestamp}-{entryId} (pre-v1.7.0)
+        // Load these for backward compatibility - they belong to whoever resumes the session
+        const oldFormatMatch = checkpointId.match(/^checkpoint-(\d+)-(.+)$/);
+        if (oldFormatMatch) {
+          const entryId = oldFormatMatch[2];
+          // Keep newest (first seen), prefer new-format if exists
+          if (!checkpoints.has(entryId)) {
+            checkpoints.set(entryId, checkpointId);
+          }
         }
       }
 
@@ -128,14 +148,15 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  async function findBeforeRestoreRef(exec: ExecFn): Promise<{ refName: string; commitSha: string } | null> {
+  async function findBeforeRestoreRef(exec: ExecFn, currentSessionId: string): Promise<{ refName: string; commitSha: string } | null> {
     try {
+      // Look for before-restore refs scoped to this session
       const result = await exec("git", [
         "for-each-ref",
         "--sort=-creatordate",
         "--count=1",
         "--format=%(refname) %(objectname)",
-        `${REF_PREFIX}${BEFORE_RESTORE_PREFIX}*`,
+        `${REF_PREFIX}${BEFORE_RESTORE_PREFIX}${currentSessionId}-*`,
       ]);
 
       const line = result.stdout.trim();
@@ -181,13 +202,15 @@ export default function (pi: ExtensionAPI) {
   async function restoreWithBackup(
     exec: ExecFn,
     targetRef: string,
+    currentSessionId: string,
     notify: (msg: string, level: "info" | "warning" | "error") => void
   ): Promise<boolean> {
     try {
-      const existingBackup = await findBeforeRestoreRef(exec);
+      const existingBackup = await findBeforeRestoreRef(exec, currentSessionId);
 
       const backupCommit = await captureWorktree();
-      const newBackupId = `${BEFORE_RESTORE_PREFIX}${Date.now()}`;
+      // Include session ID in before-restore ref to scope it per-session
+      const newBackupId = `${BEFORE_RESTORE_PREFIX}${currentSessionId}-${Date.now()}`;
       await exec("git", [
         "update-ref",
         `${REF_PREFIX}${newBackupId}`,
@@ -239,7 +262,7 @@ export default function (pi: ExtensionAPI) {
     return null;
   }
 
-  async function pruneCheckpoints(exec: ExecFn) {
+  async function pruneCheckpoints(exec: ExecFn, currentSessionId: string) {
     try {
       const result = await exec("git", [
         "for-each-ref",
@@ -249,11 +272,14 @@ export default function (pi: ExtensionAPI) {
       ]);
 
       const refs = result.stdout.trim().split("\n").filter(Boolean);
-      // Filter to only regular checkpoints (not backups or resume checkpoints)
-      const checkpointRefs = refs.filter(r =>
-        !r.includes(BEFORE_RESTORE_PREFIX) &&
-        !r.includes("checkpoint-resume-")
-      );
+      // Filter to only regular checkpoints from THIS session (not backups, resume, or other sessions)
+      const checkpointRefs = refs.filter(r => {
+        if (r.includes(BEFORE_RESTORE_PREFIX)) return false;
+        if (r.includes("checkpoint-resume-")) return false;
+        // Only include refs from current session
+        const checkpointId = r.replace(REF_PREFIX, "");
+        return checkpointId.startsWith(`checkpoint-${currentSessionId}-`);
+      });
 
       if (checkpointRefs.length > MAX_CHECKPOINTS) {
         const toDelete = checkpointRefs.slice(0, checkpointRefs.length - MAX_CHECKPOINTS);
@@ -263,9 +289,9 @@ export default function (pi: ExtensionAPI) {
           // Remove from in-memory map ONLY if this is the currently mapped checkpoint.
           // There might be a newer checkpoint for the same entry that we're keeping.
           const checkpointId = ref.replace(REF_PREFIX, "");
-          const match = checkpointId.match(/^checkpoint-(\d+)-(.+)$/);
+          const match = checkpointId.match(/^checkpoint-([a-f0-9-]{36})-(\d+)-(.+)$/);
           if (match) {
-            const entryId = match[2];
+            const entryId = match[3];
             if (checkpoints.get(entryId) === checkpointId) {
               checkpoints.delete(entryId);
             }
@@ -286,6 +312,9 @@ export default function (pi: ExtensionAPI) {
     // Reset all state for fresh initialization
     resetState();
 
+    // Capture session ID for scoping checkpoints
+    sessionId = ctx.sessionManager.getSessionId();
+
     try {
       const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
       isGitRepo = result.stdout.trim() === "true";
@@ -299,7 +328,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Rebuild checkpoints map from existing git refs (for resumed sessions)
-    await rebuildCheckpointsMap(pi.exec);
+    // Only loads checkpoints belonging to this session
+    await rebuildCheckpointsMap(pi.exec, sessionId);
 
     // Create a resume checkpoint for the current state
     const checkpointId = `checkpoint-resume-${Date.now()}`;
@@ -348,6 +378,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
     if (!isGitRepo) return;
     if (!pendingCheckpoint) return;
+    if (!sessionId) return;
     
     // Only process at end of first turn - by now the user message has been
     // appended to the session and we can find its entry ID.
@@ -359,7 +390,8 @@ export default function (pi: ExtensionAPI) {
 
       const entryId = userEntry.id;
       const sanitizedEntryId = sanitizeForRef(entryId);
-      const checkpointId = `checkpoint-${pendingCheckpoint.timestamp}-${sanitizedEntryId}`;
+      // Include session ID in checkpoint name to scope it per-session
+      const checkpointId = `checkpoint-${sessionId}-${pendingCheckpoint.timestamp}-${sanitizedEntryId}`;
 
       // Create the git ref for this checkpoint
       await pi.exec("git", [
@@ -369,7 +401,7 @@ export default function (pi: ExtensionAPI) {
       ]);
 
       checkpoints.set(sanitizedEntryId, checkpointId);
-      await pruneCheckpoints(pi.exec);
+      await pruneCheckpoints(pi.exec, sessionId);
       updateStatus(ctx);
       if (!getSilentCheckpointsSetting()) {
         ctx.ui.notify(`Checkpoint ${checkpoints.size} saved`, "info");
@@ -381,8 +413,9 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_before_branch", async (event, ctx) => {
+  pi.on("session_before_fork", async (event, ctx) => {
     if (!ctx.hasUI) return;
+    if (!sessionId) return;
 
     try {
       const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
@@ -400,7 +433,7 @@ export default function (pi: ExtensionAPI) {
       usingResumeCheckpoint = true;
     }
 
-    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec);
+    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec, sessionId);
     const hasUndo = !!beforeRestoreRef;
 
     const options: string[] = [];
@@ -442,6 +475,7 @@ export default function (pi: ExtensionAPI) {
       const success = await restoreWithBackup(
         pi.exec,
         beforeRestoreRef!.commitSha,
+        sessionId,
         ctx.ui.notify.bind(ctx.ui)
       );
       if (success) {
@@ -459,6 +493,7 @@ export default function (pi: ExtensionAPI) {
     const success = await restoreWithBackup(
       pi.exec,
       ref,
+      sessionId,
       ctx.ui.notify.bind(ctx.ui)
     );
     
@@ -482,6 +517,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_before_tree", async (event, ctx) => {
     if (!ctx.hasUI) return;
+    if (!sessionId) return;
 
     try {
       const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
@@ -500,7 +536,7 @@ export default function (pi: ExtensionAPI) {
       usingResumeCheckpoint = true;
     }
 
-    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec);
+    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec, sessionId);
     const hasUndo = !!beforeRestoreRef;
 
     const options: string[] = [];
@@ -537,6 +573,7 @@ export default function (pi: ExtensionAPI) {
       const success = await restoreWithBackup(
         pi.exec,
         beforeRestoreRef!.commitSha,
+        sessionId,
         ctx.ui.notify.bind(ctx.ui)
       );
       if (success) {
@@ -554,6 +591,7 @@ export default function (pi: ExtensionAPI) {
     const success = await restoreWithBackup(
       pi.exec,
       ref,
+      sessionId,
       ctx.ui.notify.bind(ctx.ui)
     );
     
